@@ -183,6 +183,30 @@
       color: #dbe8ff;
       opacity: 0.92;
     }
+    .wrap-score {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(0,0,0,0.08);
+    }
+    .wrap-score-label {
+      font-size: 11px;
+      color: #444;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .wrap-score-value {
+      margin-top: 2px;
+      font-size: 22px;
+      line-height: 1.1;
+      font-weight: 700;
+      color: #1d4ed8;
+    }
+    .wrap-score-details {
+      margin-top: 4px;
+      font-size: 11px;
+      color: #333;
+      opacity: 0.9;
+    }
 
     .mode-indicator {
       position: fixed;
@@ -396,9 +420,14 @@
     Mode: <span class="mode-name" id="currentModeName">Free Grab</span>
     <div class="help-tip" id="modeTip">Drag the cloth freely</div>
     <div class="runtime-status" id="runtimeStatus">Ready</div>
+    <div class="wrap-score">
+      <div class="wrap-score-label">Wrap Score</div>
+      <div class="wrap-score-value" id="wrapScoreValue">0.0%</div>
+      <div class="wrap-score-details" id="wrapScoreDetails">Top 0.0% / Side 0.0%</div>
+    </div>
   </div>
 
-  <div class="footer">Simplified model: self-collision is not implemented. Cloth-floor and cloth-box contact, a small floor clearance, and reduced surface flicker are included.</div>
+  <div class="footer">Approximate model: cloth-floor and cloth-box contact, weak top adhesion, coarse self-collision, and reduced surface flicker are included.</div>
 
   <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
   <script src="./paramui.js"></script>
@@ -410,6 +439,8 @@
     const runtimeStatus = document.getElementById('runtimeStatus');
     const currentModeName = document.getElementById('currentModeName');
     const modeTip = document.getElementById('modeTip');
+    const wrapScoreValue = document.getElementById('wrapScoreValue');
+    const wrapScoreDetails = document.getElementById('wrapScoreDetails');
 
     // UI Elements
     const meshResolutionInput = document.getElementById('meshResolution');
@@ -466,6 +497,33 @@
       cancelRequested: false,
       completed: 0,
     };
+    const wrapMetrics = {
+      topCoverage: 0,
+      sideCoverage: 0,
+      score: 0,
+    };
+    let wrapScoreUpdateTimer = 0;
+
+    function updateWrapScoreUI() {
+      wrapScoreValue.textContent = `${wrapMetrics.score.toFixed(1)}%`;
+      wrapScoreDetails.textContent = `Top ${(wrapMetrics.topCoverage * 100).toFixed(1)}% / Side ${(wrapMetrics.sideCoverage * 100).toFixed(1)}%`;
+    }
+
+    function resetWrapMetrics() {
+      wrapMetrics.topCoverage = 0;
+      wrapMetrics.sideCoverage = 0;
+      wrapMetrics.score = 0;
+      updateWrapScoreUI();
+    }
+
+    function requestStopAutoSimulation() {
+      if (!autoSimulation.running) {
+        updateStatus('Auto simulation is not running');
+        return;
+      }
+      autoSimulation.cancelRequested = true;
+      updateStatus('Stopping auto simulation...');
+    }
 
     function syncParamUIParam(path, value) {
       if (!paramUI) return;
@@ -490,7 +548,7 @@
       return values[Math.floor(Math.random() * values.length)];
     }
 
-    function buildAutoSimulationMacro() {
+    function buildAutoSimulationCommands() {
       const randomBoxSize = randomRange(0.58, 1.45, 2);
       const randomWrapTightness = randomRange(0.08, 0.32, 2);
       const randomWrapLift = randomRange(0.8, 2.25, 2);
@@ -522,8 +580,32 @@
         'press Controls.Wrap Selected Box',
         `wait ${wrapWait}`,
         'press Controls.Reset Cloth',
-        'wait 0.35'
-      ].join('; ');
+        'wait 5.0'
+      ];
+    }
+
+    async function waitForAutoSimulation(seconds) {
+      const endTime = performance.now() + seconds * 1000;
+      while (performance.now() < endTime) {
+        if (autoSimulation.cancelRequested) return false;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      return !autoSimulation.cancelRequested;
+    }
+
+    async function runAutoSimulationCommands(commands) {
+      for (const command of commands) {
+        if (autoSimulation.cancelRequested) return false;
+        const waitMatch = command.match(/^wait\s+(\d+(?:\.\d+)?)$/i);
+        if (waitMatch) {
+          const ok = await waitForAutoSimulation(Number(waitMatch[1]));
+          if (!ok) return false;
+          continue;
+        }
+        const ok = await paramUI.runMacro(command);
+        if (!ok || autoSimulation.cancelRequested) return false;
+      }
+      return true;
     }
 
     function prepareAutoSimulationBox() {
@@ -533,14 +615,14 @@
       cube.position.x = 0;
       cube.position.z = 0;
       cube.position.y = floorY + 0.04 + cube.userData.size / 2;
+      cube.userData.liftOffset = 0;
       return cube;
     }
 
     async function runAutoSimulation() {
       if (!paramUI) return;
       if (autoSimulation.running) {
-        autoSimulation.cancelRequested = true;
-        updateStatus('Stopping auto simulation after the current cycle');
+        requestStopAutoSimulation();
         return;
       }
 
@@ -559,8 +641,8 @@
           if (autoSimulation.cancelRequested) break;
           prepareAutoSimulationBox();
           updateStatus(`Auto simulation ${i + 1}/${total}: randomize, wrap, reset`);
-          const ok = await paramUI.runMacro(buildAutoSimulationMacro());
-          autoSimulation.completed = i + 1;
+          const ok = await runAutoSimulationCommands(buildAutoSimulationCommands());
+          if (ok) autoSimulation.completed = i + 1;
           if (!ok || autoSimulation.cancelRequested) break;
         }
       } finally {
@@ -601,8 +683,10 @@
         ['Cloth/Friction', 'Cloth Friction', Number(clothFrictionInput.value), [0, 20, 0.01]],
         ['Floor/Friction', 'Floor Friction', Number(floorFrictionInput.value), [0, 20, 0.01]],
         ['Floor/Texture', 'Floor Texture', floorTextureValueToName[floorTextureSelect.value], ['Wood', 'Tile', 'Concrete', 'Marble', 'Grid']],
+        ['Simulation/Solver Iterations', 'Solver Iterations', solverIterations, [4, 24, 1]],
         ['AutoSimulation/Iterations', 'Repeat Count', autoSimulation.iterations, [1, 100, 1]],
         ['AutoSimulation/Auto Simulation', 'Auto Simulation', false, 'button'],
+        ['AutoSimulation/Stop', 'Stop', false, 'button'],
       ], {
         title: 'FurosikiSim',
         onChange: ({ variable, value }) => {
@@ -686,11 +770,17 @@
               floorTextureSelect.value = floorTextureNameToValue[value] || 'wood';
               applyFloorTexture(floorTextureSelect.value);
               break;
+            case 'Simulation/Solver Iterations':
+              solverIterations = Math.max(4, Math.round(Number(value) || 12));
+              break;
             case 'AutoSimulation/Iterations':
               autoSimulation.iterations = Math.max(1, Math.round(Number(value) || 1));
               break;
             case 'AutoSimulation/Auto Simulation':
               runAutoSimulation();
+              break;
+            case 'AutoSimulation/Stop':
+              requestStopAutoSimulation();
               break;
           }
         }
@@ -800,8 +890,33 @@
     const clothClearance = 0.014;
     const clothWidth = 4.6;
     const clothHeight = 4.6;
-    const solverIterations = 8;
+    let solverIterations = 12;
     const restLift = clothClearance;
+    const topAdhesion = {
+      lateralStrength: 0.035,
+      verticalStrength: 0.12,
+      breakDistance: 0.48,
+      attachVelocityLimit: 0.14,
+      targetOffset: clothClearance + 0.008,
+      maxStep: 0.026,
+    };
+    const selfCollision = {
+      distanceScale: 0.72,
+      minDistance: 0.035,
+      maxDistance: 0.085,
+      stiffness: 0.42,
+      meshExclusionRadius: 2,
+    };
+    const cubeLift = {
+      response: 0.16,
+      releaseDecay: 0.88,
+      maxOffset: 2.4,
+      contactMargin: 0.12,
+      adhesionScale: 1.25,
+      contactScale: 0.55,
+      velocityScale: 0.35,
+    };
+    let clothParticleSpacing = clothWidth / 28;
 
     // Floor with texture
     const floorTextureLabelMap = {
@@ -1008,6 +1123,7 @@
         selectedCube.material.emissiveIntensity = 1.1;
       }
       updateObjectSizeUI();
+      evaluateWrapMetrics();
     }
 
     function setCubeSize(cube, size) {
@@ -1015,14 +1131,17 @@
       cube.scale.set(nextSize, nextSize, nextSize);
       cube.position.y = floorY + 0.04 + nextSize / 2;
       cube.userData.size = nextSize;
+      cube.userData.liftOffset = 0;
+      clearCubeAdhesions(cube);
       if (selectedCube === cube) updateObjectSizeUI();
+      evaluateWrapMetrics();
     }
 
     function createObstacleCube(size, x, z) {
       const cube = new THREE.Mesh(obstacleCubeGeometry.clone(), obstacleCubeMaterial.clone());
       cube.castShadow = true;
       cube.receiveShadow = true;
-      cube.userData = { type: 'cube', size: 1 };
+      cube.userData = { type: 'cube', size: 1, liftOffset: 0 };
       scene.add(cube);
       cubes.push(cube);
       cube.position.set(x, floorY + 0.04 + Number(size) / 2, z);
@@ -1047,6 +1166,7 @@
       }
       const idx = cubes.indexOf(selectedCube);
       if (idx >= 0) cubes.splice(idx, 1);
+      clearCubeAdhesions(selectedCube);
       scene.remove(selectedCube);
       if (selectedCube.geometry) selectedCube.geometry.dispose();
       if (selectedCube.material) selectedCube.material.dispose();
@@ -1187,6 +1307,7 @@
         this.original = position.clone();
         this.acceleration = new THREE.Vector3();
         this.layerOffset = 0;
+        this.adhesion = null;
       }
       addForce(force) { this.acceleration.add(force); }
       integrate(dt2, damping) {
@@ -1206,6 +1327,7 @@
         this.previous.copy(this.original);
         this.acceleration.set(0, 0, 0);
         this.layerOffset = 0;
+        this.adhesion = null;
       }
     }
 
@@ -1264,6 +1386,8 @@
       autoFold = null;
       highlight.visible = false;
       controls.enabled = true;
+      clearAllAdhesions();
+      resetWrapMetrics();
 
       disposeClothMeshes();
 
@@ -1282,6 +1406,7 @@
       const restDistanceX = clothWidth / segX;
       const restDistanceY = clothHeight / segY;
       const restDiag = Math.hypot(restDistanceX, restDistanceY);
+      clothParticleSpacing = Math.min(restDistanceX, restDistanceY);
       const index = (x, y) => x + y * pointCountX;
       const addConstraint = (a, b, rest, kind) => constraints.push({ a, b, rest, kind });
 
@@ -1295,6 +1420,10 @@
           }
           if (x + 2 <= segX) addConstraint(index(x, y), index(x + 2, y), restDistanceX * 2, 'bend');
           if (y + 2 <= segY) addConstraint(index(x, y), index(x, y + 2), restDistanceY * 2, 'bend');
+          if (x + 3 <= segX) addConstraint(index(x, y), index(x + 3, y), restDistanceX * 3, 'support');
+          if (y + 3 <= segY) addConstraint(index(x, y), index(x, y + 3), restDistanceY * 3, 'support');
+          if (x + 2 <= segX && y + 2 <= segY) addConstraint(index(x, y), index(x + 2, y + 2), restDiag * 2, 'support');
+          if (x + 2 <= segX && y - 2 >= 0) addConstraint(index(x, y), index(x + 2, y - 2), restDiag * 2, 'support');
         }
       }
 
@@ -1330,6 +1459,7 @@
       const bend = Math.max(0, clothBendability);
       if (kind === 'struct') return 1 / (1 + stretch * 0.09);
       if (kind === 'shear') return 0.92 / (1 + stretch * 0.065 + bend * 0.03);
+      if (kind === 'support') return 0.28 / (1 + stretch * 0.05 + bend * 0.18);
       return 0.62 / (1 + bend * 0.42);
     }
 
@@ -1535,7 +1665,9 @@
       controls.enabled = true;
       highlight.visible = false;
       edgeHighlights.forEach(h => h.visible = false);
+      clearAllAdhesions();
       for (const p of particles) p.reset();
+      resetWrapMetrics();
       updateStatus('Reset the cloth');
     }
 
@@ -1746,6 +1878,7 @@
       syncParamUIParam('Cloth/Friction', clothFriction);
       syncParamUIParam('Floor/Friction', floorFriction);
       syncParamUIParam('Objects/Size', Number(objectSizeInput.value));
+      syncParamUIParam('Simulation/Solver Iterations', solverIterations);
     }
 
     function applyGrab() {
@@ -1860,6 +1993,7 @@
 
       if (Math.abs(outward.y) > 0.5 && outward.y > 0) {
         p.position.y = max.y + eps;
+        tryAttachToCubeTop(p, cube);
       } else {
         if (outward.x < -0.5) p.position.x = min.x - eps;
         if (outward.x > 0.5) p.position.x = max.x + eps;
@@ -1882,6 +2016,266 @@
       }
     }
 
+    function areNearbyOnMesh(a, b) {
+      const ax = a % pointCountX;
+      const ay = Math.floor(a / pointCountX);
+      const bx = b % pointCountX;
+      const by = Math.floor(b / pointCountX);
+      return Math.abs(ax - bx) <= selfCollision.meshExclusionRadius && Math.abs(ay - by) <= selfCollision.meshExclusionRadius;
+    }
+
+    function getSelfCollisionDistance() {
+      return THREE.MathUtils.clamp(clothParticleSpacing * selfCollision.distanceScale, selfCollision.minDistance, selfCollision.maxDistance);
+    }
+
+    function applySelfCollisions() {
+      const minDistance = getSelfCollisionDistance();
+      const minDistanceSq = minDistance * minDistance;
+      const cellSize = minDistance * 1.35;
+      const buckets = new Map();
+
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        const gx = Math.floor(p.position.x / cellSize);
+        const gy = Math.floor(p.position.y / cellSize);
+        const gz = Math.floor(p.position.z / cellSize);
+
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dz = -1; dz <= 1; dz++) {
+              const key = `${gx + dx}|${gy + dy}|${gz + dz}`;
+              const bucket = buckets.get(key);
+              if (!bucket) continue;
+              for (const j of bucket) {
+                if (areNearbyOnMesh(i, j)) continue;
+                const q = particles[j];
+                tempV1.subVectors(p.position, q.position);
+                const distSq = tempV1.lengthSq();
+                if (distSq < 1e-10 || distSq >= minDistanceSq) continue;
+                const dist = Math.sqrt(distSq);
+                const separation = (minDistance - dist) * selfCollision.stiffness;
+                const invDist = 1 / dist;
+                const px = tempV1.x * invDist * separation;
+                const py = tempV1.y * invDist * separation;
+                const pz = tempV1.z * invDist * separation;
+                const pWeight = p.adhesion ? 0.35 : 0.5;
+                const qWeight = q.adhesion ? 0.35 : 0.5;
+                const totalWeight = pWeight + qWeight;
+                if (totalWeight <= 0) continue;
+                const pShare = pWeight / totalWeight;
+                const qShare = qWeight / totalWeight;
+                p.position.x += px * pShare;
+                p.position.y += py * pShare;
+                p.position.z += pz * pShare;
+                q.position.x -= px * qShare;
+                q.position.y -= py * qShare;
+                q.position.z -= pz * qShare;
+              }
+            }
+          }
+        }
+
+        const selfKey = `${gx}|${gy}|${gz}`;
+        if (!buckets.has(selfKey)) buckets.set(selfKey, []);
+        buckets.get(selfKey).push(i);
+      }
+    }
+
+
+    function clearAllAdhesions() {
+      for (const p of particles) p.adhesion = null;
+    }
+
+    function clearCubeAdhesions(cube) {
+      if (!cube) return;
+      for (const p of particles) {
+        if (p.adhesion && p.adhesion.cube === cube) p.adhesion = null;
+      }
+    }
+
+    function tryAttachToCubeTop(p, cube) {
+      if (!cube) return;
+      if (p.adhesion && p.adhesion.cube === cube) return;
+      const size = cube.userData.size || defaultObjectSize;
+      const half = size / 2;
+      const localX = p.position.x - cube.position.x;
+      const localZ = p.position.z - cube.position.z;
+      if (Math.abs(localX) > half + 0.03 || Math.abs(localZ) > half + 0.03) return;
+      const verticalVelocity = p.position.y - p.previous.y;
+      if (verticalVelocity > topAdhesion.attachVelocityLimit) return;
+      const edgeFade = 1 - Math.max(Math.abs(localX), Math.abs(localZ)) / Math.max(half, 1e-6);
+      p.adhesion = { cube, localX, localZ, age: 0, weight: THREE.MathUtils.clamp(0.45 + edgeFade * 0.55, 0.45, 1) };
+    }
+
+    function applyTopAdhesion() {
+      const breakDistanceSq = topAdhesion.breakDistance * topAdhesion.breakDistance;
+      for (const p of particles) {
+        const adhesion = p.adhesion;
+        if (!adhesion) continue;
+        const cube = adhesion.cube;
+        if (!cube || cubes.indexOf(cube) < 0) {
+          p.adhesion = null;
+          continue;
+        }
+        const size = cube.userData.size || defaultObjectSize;
+        const half = size / 2;
+        const targetX = cube.position.x + THREE.MathUtils.clamp(adhesion.localX, -half - 0.03, half + 0.03);
+        const targetZ = cube.position.z + THREE.MathUtils.clamp(adhesion.localZ, -half - 0.03, half + 0.03);
+        const targetY = cube.position.y + half + topAdhesion.targetOffset + p.layerOffset;
+        const dx = targetX - p.position.x;
+        const dy = targetY - p.position.y;
+        const dz = targetZ - p.position.z;
+        const distSq = dx * dx + dy * dy + dz * dz;
+        const localX = p.position.x - cube.position.x;
+        const localZ = p.position.z - cube.position.z;
+        if (distSq > breakDistanceSq || Math.abs(localX) > half + 0.42 || Math.abs(localZ) > half + 0.42 || p.position.y < cube.position.y - half - 0.12) {
+          p.adhesion = null;
+          continue;
+        }
+        adhesion.age = Math.min(1, (adhesion.age || 0) + 0.12);
+        const ramp = adhesion.age * adhesion.weight;
+        const moveX = THREE.MathUtils.clamp(dx * topAdhesion.lateralStrength * ramp, -topAdhesion.maxStep, topAdhesion.maxStep);
+        const moveY = THREE.MathUtils.clamp(dy * topAdhesion.verticalStrength * ramp, -topAdhesion.maxStep, topAdhesion.maxStep);
+        const moveZ = THREE.MathUtils.clamp(dz * topAdhesion.lateralStrength * ramp, -topAdhesion.maxStep, topAdhesion.maxStep);
+        p.position.x += moveX;
+        p.position.y += moveY;
+        p.position.z += moveZ;
+        p.previous.x += moveX * 0.35;
+        p.previous.y += moveY * 0.35;
+        p.previous.z += moveZ * 0.35;
+      }
+    }
+
+
+    function getCubeBaseY(cube) {
+      return floorY + 0.04 + (cube.userData.size || defaultObjectSize) / 2;
+    }
+
+    function updateCubeLiftDynamics(dt) {
+      if (!cubes.length) return;
+      const response = 1 - Math.pow(1 - cubeLift.response, dt * 60);
+      const releaseDecay = Math.pow(cubeLift.releaseDecay, dt * 60);
+
+      for (const cube of cubes) {
+        const baseY = getCubeBaseY(cube);
+        if (activeCubeGrab && activeCubeGrab.cube === cube) {
+          cube.userData.liftOffset = 0;
+          cube.position.y = baseY;
+          continue;
+        }
+
+        const size = cube.userData.size || defaultObjectSize;
+        const half = size / 2;
+        const topY = cube.position.y + half + topAdhesion.targetOffset;
+        let supportWeight = 0;
+        let liftSignal = 0;
+
+        for (const p of particles) {
+          const localX = p.position.x - cube.position.x;
+          const localZ = p.position.z - cube.position.z;
+          if (Math.abs(localX) > half + cubeLift.contactMargin || Math.abs(localZ) > half + cubeLift.contactMargin) continue;
+
+          const aboveTop = p.position.y - topY;
+          const upwardVelocity = Math.max(0, p.position.y - p.previous.y);
+
+          if (p.adhesion && p.adhesion.cube === cube) {
+            const adhesionWeight = 0.75 + (p.adhesion.weight || 0.5) * 0.75;
+            const adhesionLift = Math.max(0, aboveTop + 0.012) * cubeLift.adhesionScale + upwardVelocity * cubeLift.velocityScale;
+            if (adhesionLift > 0) {
+              liftSignal += adhesionLift * adhesionWeight;
+              supportWeight += adhesionWeight;
+            }
+          } else if (aboveTop > -0.03 && upwardVelocity > 0.0015) {
+            const contactLift = Math.max(0, aboveTop + 0.008) * cubeLift.contactScale + upwardVelocity * cubeLift.velocityScale;
+            if (contactLift > 0) {
+              liftSignal += contactLift;
+              supportWeight += 0.45;
+            }
+          }
+        }
+
+        const currentOffset = cube.userData.liftOffset || 0;
+        const targetOffset = supportWeight > 0
+          ? THREE.MathUtils.clamp(liftSignal / supportWeight, 0, cubeLift.maxOffset)
+          : 0;
+        const nextOffset = supportWeight > 0
+          ? THREE.MathUtils.lerp(currentOffset, targetOffset, response)
+          : currentOffset * releaseDecay;
+
+        cube.userData.liftOffset = Math.max(0, nextOffset);
+        cube.position.y = baseY + cube.userData.liftOffset;
+      }
+    }
+
+    function getWrapScoreCube() {
+      if (selectedCube && cubes.includes(selectedCube)) return selectedCube;
+      return cubes[cubes.length - 1] || null;
+    }
+
+    function clamp01(v) {
+      return Math.max(0, Math.min(1, v));
+    }
+
+    function markCoverageCell(cells, grid, u, v) {
+      const x = Math.floor(clamp01(u) * grid);
+      const y = Math.floor(clamp01(v) * grid);
+      const ix = Math.max(0, Math.min(grid - 1, x));
+      const iy = Math.max(0, Math.min(grid - 1, y));
+      cells[ix + iy * grid] = 1;
+    }
+
+    function evaluateWrapMetrics() {
+      const cube = getWrapScoreCube();
+      if (!cube || !particles.length) {
+        resetWrapMetrics();
+        return;
+      }
+      const size = cube.userData.size || defaultObjectSize;
+      const half = size / 2;
+      const margin = Math.max(0.06, Math.min(0.18, wrapTightness * 0.7));
+      const topGrid = 10;
+      const sideGrid = 8;
+      const planeThreshold = Math.max(0.06, Math.min(0.16, size * 0.16));
+      const verticalMargin = 0.05;
+      const topCells = new Uint8Array(topGrid * topGrid);
+      const sideCells = {
+        px: new Uint8Array(sideGrid * sideGrid),
+        nx: new Uint8Array(sideGrid * sideGrid),
+        pz: new Uint8Array(sideGrid * sideGrid),
+        nz: new Uint8Array(sideGrid * sideGrid),
+      };
+
+      for (const p of particles) {
+        const lx = p.position.x - cube.position.x;
+        const ly = p.position.y - cube.position.y;
+        const lz = p.position.z - cube.position.z;
+
+        if (Math.abs(ly - half) <= planeThreshold && Math.abs(lx) <= half + margin && Math.abs(lz) <= half + margin) {
+          markCoverageCell(topCells, topGrid, (lx + half + margin) / ((half + margin) * 2), (lz + half + margin) / ((half + margin) * 2));
+        }
+
+        if (ly >= -half - verticalMargin && ly <= half + verticalMargin) {
+          if (Math.abs(lx - half) <= planeThreshold && Math.abs(lz) <= half + margin) {
+            markCoverageCell(sideCells.px, sideGrid, (lz + half + margin) / ((half + margin) * 2), (ly + half + verticalMargin) / (size + verticalMargin * 2));
+          }
+          if (Math.abs(lx + half) <= planeThreshold && Math.abs(lz) <= half + margin) {
+            markCoverageCell(sideCells.nx, sideGrid, (lz + half + margin) / ((half + margin) * 2), (ly + half + verticalMargin) / (size + verticalMargin * 2));
+          }
+          if (Math.abs(lz - half) <= planeThreshold && Math.abs(lx) <= half + margin) {
+            markCoverageCell(sideCells.pz, sideGrid, (lx + half + margin) / ((half + margin) * 2), (ly + half + verticalMargin) / (size + verticalMargin * 2));
+          }
+          if (Math.abs(lz + half) <= planeThreshold && Math.abs(lx) <= half + margin) {
+            markCoverageCell(sideCells.nz, sideGrid, (lx + half + margin) / ((half + margin) * 2), (ly + half + verticalMargin) / (size + verticalMargin * 2));
+          }
+        }
+      }
+
+      const sumCells = cells => cells.reduce((acc, value) => acc + value, 0);
+      wrapMetrics.topCoverage = sumCells(topCells) / topCells.length;
+      wrapMetrics.sideCoverage = (sumCells(sideCells.px) + sumCells(sideCells.nx) + sumCells(sideCells.pz) + sumCells(sideCells.nz)) / (sideGrid * sideGrid * 4);
+      wrapMetrics.score = Math.max(0, Math.min(100, (wrapMetrics.topCoverage * 0.3 + wrapMetrics.sideCoverage * 0.7) * 100));
+      updateWrapScoreUI();
+    }
 
     function easeInOut(t) {
       return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -1942,6 +2336,8 @@
           applyConstraint(constraints[i]);
         }
         applyCubeCollisions();
+        applyTopAdhesion();
+        applySelfCollisions();
         for (const p of particles) {
           const yMin = floorY + clothClearance + p.layerOffset;
           if (p.position.y < yMin) {
@@ -1955,7 +2351,13 @@
         applyGrab();
         pinAutoFoldPose();
       }
+      updateCubeLiftDynamics(dt);
       if (autoFold && autoFold.t >= 1) autoFold = null;
+      wrapScoreUpdateTimer += dt;
+      if (wrapScoreUpdateTimer >= 0.15) {
+        wrapScoreUpdateTimer = 0;
+        evaluateWrapMetrics();
+      }
     }
 
     function updateGeometry() {
@@ -2028,6 +2430,7 @@
     createObstacleCube(0.95, 0, 0);
     updateObjectSizeUI();
     createSimulationParamUI();
+    resetWrapMetrics();
     updateStatus('Ready');
     requestAnimationFrame((t) => {
       lastTime = t;
