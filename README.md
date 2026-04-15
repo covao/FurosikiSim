@@ -1,17 +1,13 @@
 # FurosikiSim
-![Demo Image](https://covao.github.io/FurosikiSim/demo.png)
+![Demo Image](./demo.gif)
 
 ## Overview
-FurosikiSim is a browser-based cloth folding and box wrapping simulator with simple 3D physics, an interactive ParamUI panel, and a macro-driven auto simulation mode.
+FurosikiSim is a browser-based cloth folding and box wrapping simulator with simple 3D physics, a ParamUI-based control panel, and a macro-driven auto simulation mode.
 
 ## Quick Start
-Repository:
-https://github.com/covao/FurosikiSim
-
-GitHub Pages:
 https://covao.github.io/FurosikiSim/FurosikiSim.html
 
-Place `FurosikiSim.html` and `paramui.js` in the same folder, then open `FurosikiSim.html` in a modern browser. You can also publish the repository with GitHub Pages.
+Keep `FurosikiSim.html` and `paramui.js` in the same folder, then open `FurosikiSim.html` in a modern browser. You can also publish both files with GitHub Pages.
 
 ## Features
 - Real-time cloth interaction in a 3D view
@@ -21,38 +17,34 @@ Place `FurosikiSim.html` and `paramui.js` in the same folder, then open `Furosik
 - Adjustable cloth parameters such as mesh resolution, weight, bendability, stretchability, and friction
 - Adjustable floor friction and floor texture
 - ParamUI-based control panel for editing parameters from a structured UI
-- Auto Simulation group with repeat count and a one-click randomized wrap demo
-- ParamUI macro execution that automatically changes parameters, resets the cloth, wraps the box, and repeats the sequence
-- Improved slider visibility in the ParamUI panel
+- AutoSimulation group with repeat count, start, and stop controls
+- Macro-driven automation using `paramui.js` to randomize parameters, wrap the cloth, reset the scene, and repeat
+- Improved slider styling so the slider bar remains visible against the panel background
 
 ## Requirements
 - A modern web browser
 - WebGL enabled
 - Recommended: latest Chrome, Edge, Firefox, or Safari
 
-## Installation
-```bash
-git clone https://github.com/covao/FurosikiSim.git && cd FurosikiSim
-```
-
-## Uninstallation
-```bash
-rm -rf FurosikiSim
-```
 
 ## Usage
-Open `FurosikiSim.html` in your browser to start the simulator. Use the ParamUI panel on the left to change interaction mode, cloth settings, floor settings, object settings, and wrapping parameters.
+Open `FurosikiSim.html` in your browser to start the simulator. The ParamUI panel contains the simulation controls grouped by category.
 
-### Manual simulation
-Drag the cloth or a selected box to interact with the scene. Use the wrapping controls to place a box at the center and wrap the cloth around it. Adjust cloth strength-related parameters to change how strongly the cloth resists stretching and bending.
+### Manual Simulation
+Use the `Controls`, `Objects`, `Box Wrapping`, `Cloth`, and `Floor` groups to interactively configure the scene. Drag the cloth or a selected box directly in the 3D view.
 
-### Auto simulation
-Open the `Auto Simulation` group in the ParamUI panel, set `Repeat Count`, and press `Run Auto Simulation`.
+### Auto Simulation
+Open the `AutoSimulation` group in the ParamUI panel.
 
-Each cycle uses the ParamUI macro feature to:
-1. Randomize key wrapping and cloth parameters
-2. Reset the cloth state
-3. Wrap the box automatically
-4. Repeat for the requested number of cycles
+1. Set `Repeat Count`.
+2. Press `Auto Simulation`.
+3. Press `Stop` to interrupt the sequence at any time.
 
-The runtime status text shows the current progress and completion state.
+Each cycle uses the ParamUI macro runner in `paramui.js` to:
+- randomize box size and wrapping parameters
+- randomize selected cloth and floor parameters
+- execute the wrap action
+- reset the cloth
+- repeat for the specified count
+
+The stop request is checked during waits and between macro steps, so the simulation stops more responsively than a per-cycle stop.
